@@ -1,6 +1,6 @@
 #pragma once
 #include "Simulation.h"
-#include <RE/N/NiMatrix3.h>
+// RE::NiMatrix3 comes from the runtime-specific PCH (flat CommonLibF4 or CommonLibF4VR).
 namespace nuka {
 // FO4 runtime stores each local basis vector in one SIMD entry (columns).
 // Verified in 1.11.240 NiAVObject::UpdateWorldData -> RVA 0x344820:

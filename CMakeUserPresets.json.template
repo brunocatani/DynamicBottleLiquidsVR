@@ -1,0 +1,19 @@
+// Copy to CMakeUserPresets.json (ignored by git) and fill in your local paths.
+// Build and deploy:  cmake --preset custom-fast
+//                    cmake --build build-fast --config Release
+// Tests:             cmake --build build-fast --config Release --target build_tests
+//                    ctest --test-dir build-fast -C Release --output-on-failure
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "custom-fast",
+      "inherits": "fast",
+      "cacheVariables": {
+        "COMMON_LIB_F4VR_PATH": "[CommonLibF4VR checkout]",
+        "POST_BUILD_COPY_PLUGIN": true,
+        "COPY_PLUGIN_BASE_PATH": "[MO2 mods folder]/DynamicBottleLiquids VR"
+      }
+    }
+  ]
+}

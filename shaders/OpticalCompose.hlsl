@@ -25,14 +25,27 @@ float4 PS(V v):SV_Target0 {
     if(sceneZ+1e-7<surfaceDepth)return unchanged;
     // FO4 native initial displacement and screen-edge policy, in UV coordinates.
     float2 shifted=v.uv+float2(-1,1)*.25*d.b*(d.rg-.5);
-    #ifdef UPSCALED_VIEWPORT
+#ifdef STEREO_PACKED
+    // Fallout 4 VR packs both eyes side by side. The edge policy applies to the
+    // destination eye's own view, and no sample may cross into the other eye.
+#ifdef UPSCALED_VIEWPORT
+    float2 viewScale=float2(ActiveExtent.x*.5,ActiveExtent.y);
+#else
+    float2 viewScale=float2(.5,1);
+#endif
+    float2 viewOrigin=float2(v.uv.x<viewScale.x?0:viewScale.x,0);
+    shifted=(shifted-viewOrigin)/viewScale;
+#elif defined(UPSCALED_VIEWPORT)
     shifted/=ActiveExtent;
 #endif
     float2 edge=shifted;
     edge=lerp(edge,(edge-.85)*.78+.85,step(.85,shifted));
     edge=lerp(edge,.15-(.15-shifted)*.78,1-step(.15,shifted));
     shifted=lerp(shifted,edge,d.b);
-#ifdef UPSCALED_VIEWPORT
+#ifdef STEREO_PACKED
+    bool insideEye=all(shifted>=0)&&all(shifted<=1);
+    shifted=shifted*viewScale+viewOrigin;
+#elif defined(UPSCALED_VIEWPORT)
     shifted*=ActiveExtent;
 #endif
     // Exact identity only, after native edge handling and the original foreground guard.
@@ -44,6 +57,10 @@ float4 PS(V v):SV_Target0 {
 #ifdef UPSCALED_VIEWPORT
     // Bilinear footprint must stay inside the populated render region.
     valid=valid&&all(shifted>=.5/float2(w,h))&&all(shifted<=ActiveExtent-.5/float2(w,h));
+#endif
+#ifdef STEREO_PACKED
+    // Bilinear footprint must stay inside the destination eye.
+    valid=valid&&insideEye&&shifted.x>=viewOrigin.x+.5/w&&shifted.x<=viewOrigin.x+viewScale.x-.5/w;
 #endif
     // Coverage belongs to the destination pixel. A cylinder lens may sample
     // background beyond the bottle silhouette; scene depth validates that ray.

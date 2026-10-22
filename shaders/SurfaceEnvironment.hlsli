@@ -1,6 +1,26 @@
 // Effect envmap composition verified against the captured vanilla PS:
 // build/audit-refraction/baseline10461/ShaderStage.Pixel-21003.txt, ops 20-65.
 // These are the original colour draw's b2 values already snapshotted at b12.
+#ifdef STEREO_INSTANCED
+// Fallout 4 VR Effect PS b2 (22 rows): the six positional/directional fields hold one row
+// per eye (native PS 0x404 reads cb2[eye+2k]), row 12 is unused, the rest are unchanged.
+// Light positions stay in mesh space; the native VS forwards the raw mesh position.
+cbuffer SurfaceNativeLighting : register(b12) {
+    float4 NativeLightPositionXEye[2],NativeLightPositionYEye[2],NativeLightPositionZEye[2];
+    float4 NativeSpotDirectionXEye[2],NativeSpotDirectionYEye[2],NativeSpotDirectionZEye[2];
+    float4 NativeUnusedRow;
+    float4 NativeSpotExponent,NativeSpotCosHalfPhi,NativeRadiusInverse;
+    float4 NativeLightRed,NativeLightGreen,NativeLightBlue;
+    float4 NativeDirectionalColour,NativePropertyColour,NativeAlphaTest;
+};
+static uint NativeEye=0; // set from the producer VS eye at PSMain entry
+#define NativeLightPositionX NativeLightPositionXEye[NativeEye]
+#define NativeLightPositionY NativeLightPositionYEye[NativeEye]
+#define NativeLightPositionZ NativeLightPositionZEye[NativeEye]
+#define NativeSpotDirectionX NativeSpotDirectionXEye[NativeEye]
+#define NativeSpotDirectionY NativeSpotDirectionYEye[NativeEye]
+#define NativeSpotDirectionZ NativeSpotDirectionZEye[NativeEye]
+#else
 cbuffer SurfaceNativeLighting : register(b12) {
     float4 NativeLightPositionX,NativeLightPositionY,NativeLightPositionZ;
     float4 NativeSpotDirectionX,NativeSpotDirectionY,NativeSpotDirectionZ;
@@ -8,6 +28,7 @@ cbuffer SurfaceNativeLighting : register(b12) {
     float4 NativeLightRed,NativeLightGreen,NativeLightBlue;
     float4 NativeDirectionalColour,NativePropertyColour,NativeAlphaTest;
 };
+#endif
 SamplerState SurfaceCubeSampler : register(s5);
 
 float3 effectSurfaceLighting(float3 localPosition) {

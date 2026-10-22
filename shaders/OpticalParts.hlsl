@@ -96,10 +96,27 @@ void traceRange(float3 origin,float3 direction,int steps,out int first,out int l
 #include "LiquidCore.inc"
 #include "BottleLens.hlsli"
 // Explicit snapshot of the original colour-pass transform. Never bind native utility b2 here.
+#ifdef STEREO_INSTANCED
+// Fallout 4 VR Effect VS b2: one WorldViewProj and one ModelView per eye, selected by
+// SV_InstanceID & 1. b8[0].x is the native packed-stereo factor read by every VR VS.
+cbuffer NativeGeometry : register(b10) {
+    row_major float4x4 StereoWorldViewProj[2];
+    row_major float3x4 StereoModelView[2];
+};
+cbuffer NativeStereo : register(b8) { float4 StereoParameters; };
+// Native packed-stereo conversion: both eyes share one double-wide target and the
+// x/w transform is linear, so clip-space basis vectors use the same mapping.
+float4 packStereoClip(float4 clip,uint eye){
+    float s=StereoParameters.x;
+    clip.x=clip.x*(2-s)*.5-clip.w*(eye?-.5:.5)*s;
+    return clip;
+}
+#else
 cbuffer NativeGeometry : register(b10) {
     row_major float4x4 WorldViewProj;
     row_major float3x4 ModelView;
 };
+#endif
 Texture2D<float2> SurfaceNoise : register(t16);
 SamplerState NoiseSampler : register(s13);
 cbuffer OpticalViewport : register(b11) { float2 TargetSize; float2 ViewportOrigin; };
@@ -113,10 +130,24 @@ Texture2D<float4> SurfaceMask : register(t7);
 #include "SurfaceEnvironment.hlsli"
 Texture2DArray<float> SunDepth : register(t20);
 SamplerComparisonState SunSampler : register(s10);
-struct VertexIn { float4 position : POSITION; float4 normal : NORMAL; float2 uv:TEXCOORD0; float4 bitangent:BINORMAL; };
-struct VertexOut { float4 position : SV_Position; float3 local : TEXCOORD0; float3 normal : TEXCOORD1; nointerpolation float3 eye : TEXCOORD2; float3 viewNormal : TEXCOORD3; float3 worldNormal : TEXCOORD4; float3 worldIncoming : TEXCOORD5; float2 uv:TEXCOORD6; float3 worldPosition:TEXCOORD7; nointerpolation float4 clipX:TEXCOORD8; nointerpolation float4 clipY:TEXCOORD9; nointerpolation float4 clipZ:TEXCOORD10; nointerpolation float4 clipOrigin:TEXCOORD11; float3 cubeTangent:TEXCOORD12; float3 cubeBitangent:TEXCOORD13; float3 cubeNormal:TEXCOORD14; float4 cubeEyeFalloff:TEXCOORD15; };
+struct VertexIn { float4 position : POSITION; float4 normal : NORMAL; float2 uv:TEXCOORD0; float4 bitangent:BINORMAL;
+#ifdef STEREO_INSTANCED
+    uint instance:SV_InstanceID;
+#endif
+};
+struct VertexOut { float4 position : SV_Position; float3 local : TEXCOORD0; float3 normal : TEXCOORD1; nointerpolation float3 eye : TEXCOORD2; float3 viewNormal : TEXCOORD3; float3 worldNormal : TEXCOORD4; float3 worldIncoming : TEXCOORD5; float2 uv:TEXCOORD6; float3 worldPosition:TEXCOORD7; nointerpolation float4 clipX:TEXCOORD8; nointerpolation float4 clipY:TEXCOORD9; nointerpolation float4 clipZ:TEXCOORD10; nointerpolation float4 clipOrigin:TEXCOORD11; float3 cubeTangent:TEXCOORD12; float3 cubeBitangent:TEXCOORD13; float3 cubeNormal:TEXCOORD14; float4 cubeEyeFalloff:TEXCOORD15;
+#ifdef STEREO_INSTANCED
+    float cullDistance:SV_CullDistance0; float clipDistance:SV_ClipDistance0;
+    nointerpolation uint eyeIndex:TEXCOORD16;
+#endif
+};
 VertexOut VSMain(VertexIn v) {
     VertexOut o;
+#ifdef STEREO_INSTANCED
+    uint eyeIndex=v.instance&1;
+    float4x4 WorldViewProj=StereoWorldViewProj[eyeIndex];
+    float3x4 ModelView=StereoModelView[eyeIndex];
+#endif
     o.position=mul(WorldViewProj,float4(v.position.xyz,1));
     o.local=mul(MeshToSimulation,float4(v.position.xyz,1)).xyz;
     // Invert the affine simulation transform once per vertex. Clip basis is
@@ -133,7 +164,18 @@ VertexOut VSMain(VertexIn v) {
     float3 eye=-mul(t,r)/max(dot(r[0],r[0]),1e-8);
     if(BubblePadding.z>0)eye=float3(MeshToWorld[0].w,MeshToWorld[1].w,MeshToWorld[2].w);
     o.eye=mul(MeshToSimulation,float4(eye,1)).xyz;
+#ifdef STEREO_INSTANCED
+    // VR "ModelView" keeps world axes (mesh -> eye-relative world), so the screen-space
+    // wall shift takes its view-space normal from the per-eye WorldViewProj: each clip row
+    // divided by its projection scale (row length over the uniform mesh scale).
+    float meshScale=sqrt(max(dot(r[0],r[0]),1e-12));
+    float4 clipNormal=mul(WorldViewProj,float4(v.normal.xyz*2-1,0));
+    o.viewNormal=float3(clipNormal.x/max(length(WorldViewProj[0].xyz),1e-8),clipNormal.y/max(length(WorldViewProj[1].xyz),1e-8),
+        clipNormal.w/max(length(WorldViewProj[3].xyz),1e-8))*meshScale;
+    o.eyeIndex=eyeIndex;
+#else
     o.viewNormal=mul(r,v.normal.xyz*2-1);
+#endif
     float3x3 world=float3x3(MeshToWorld[0].xyz,MeshToWorld[1].xyz,MeshToWorld[2].xyz);
     o.worldNormal=mul(world,v.normal.xyz*2-1);
     o.worldIncoming=mul(world,v.position.xyz-eye);
@@ -152,6 +194,15 @@ VertexOut VSMain(VertexIn v) {
         falloff=lerp(SurfaceFalloff.z,SurfaceFalloff.w,x*x*(3-2*x));
     }
     o.cubeEyeFalloff=float4(nativeEye,falloff);
+#ifdef STEREO_INSTANCED
+    // Same per-eye clipping as the native VS keeps each eye inside its half.
+    float side=eyeIndex?1:-1;
+    float edge=StereoParameters.x>0?o.position.w+side*o.position.x:1;
+    o.cullDistance=edge;o.clipDistance=edge;
+    o.position=packStereoClip(o.position,eyeIndex);
+    o.clipX=packStereoClip(o.clipX,eyeIndex);o.clipY=packStereoClip(o.clipY,eyeIndex);
+    o.clipZ=packStereoClip(o.clipZ,eyeIndex);o.clipOrigin=packStereoClip(o.clipOrigin,eyeIndex);
+#endif
     return o;
 }
 float sunVisibility(float3 position){
@@ -199,6 +250,9 @@ PixelOut PSMain(VertexOut v,bool front:SV_IsFrontFace) {
     if(!front)discard;
 #else
 PixelOut PSMain(VertexOut v) {
+#endif
+#ifdef STEREO_INSTANCED
+    NativeEye=v.eyeIndex;
 #endif
     uint nativeW,nativeH;NativeDepth.GetDimensions(nativeW,nativeH);
     uint2 pixel=min(uint2(v.position.xy/TargetSize*float2(nativeW,nativeH)),uint2(nativeW-1,nativeH-1));

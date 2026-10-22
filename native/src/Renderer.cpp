@@ -22,10 +22,10 @@ void Renderer::Initialize(ID3D11Device* device,const std::filesystem::path& path
     Check(device->CreateSamplerState(&sd,&shadowSampler));
 
 }
-bool Renderer::Draw(ID3D11DeviceContext* ctx,const Constants& c,UINT count,UINT start,INT base,void (STDMETHODCALLTYPE* original)(ID3D11DeviceContext*,UINT,UINT,INT)){
-    if(!surfaceNoise||ctx->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE||count!=expectedIndices)return false;
+bool Renderer::Draw(ID3D11DeviceContext* ctx,const Constants& c,const DrawCall& call){
+    if(!surfaceNoise||ctx->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE||call.indexCount!=expectedIndices)return false;
     ComPtr<ID3D11Buffer> vb,native,nativeLighting;UINT stride{},offset{};ctx->IAGetVertexBuffers(0,1,&vb,&stride,&offset);ctx->VSGetConstantBuffers(2,1,&native);
-    if(!vb||stride!=20||!native)return false;D3D11_BUFFER_DESC desc{};native->GetDesc(&desc);if(desc.ByteWidth<112)return false;
+    if(!vb||stride!=20||!native)return false;D3D11_BUFFER_DESC desc{};native->GetDesc(&desc);if(desc.ByteWidth<geometryConstantBytes)return false;
     ctx->PSGetConstantBuffers(2,1,&nativeLighting);
     if(!nativeLighting)return false;
     D3D11_BUFFER_DESC lightingDesc{};nativeLighting->GetDesc(&lightingDesc);if(lightingDesc.ByteWidth<240)return false;
@@ -65,7 +65,7 @@ bool Renderer::Draw(ID3D11DeviceContext* ctx,const Constants& c,UINT count,UINT 
     if(drawConstants.optics.w>=2){
         // Preserve the engine shadow sampler around the direct draw.
         ComPtr<ID3D11SamplerState> old;ctx->PSGetSamplers(10,1,&old);auto* sampler=shadowSampler.Get();ctx->PSSetSamplers(10,1,&sampler);
-        bool result=false;try{result=Native().DrawDistant(ctx,drawConstants,environment.Get(),sunArray.Get(),count,start,base,original);}catch(...){sampler=old.Get();ctx->PSSetSamplers(10,1,&sampler);throw;}
+        bool result=false;try{result=Native().DrawDistant(ctx,drawConstants,environment.Get(),sunArray.Get(),call);}catch(...){sampler=old.Get();ctx->PSSetSamplers(10,1,&sampler);throw;}
         sampler=old.Get();ctx->PSSetSamplers(10,1,&sampler);return result;
     }
     bool accepted=false;

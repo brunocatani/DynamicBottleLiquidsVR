@@ -2,7 +2,7 @@
 #include "Simulation.h"
 #include "RegionComposer.h"
 #include "ConstantBufferRing.h"
-#include <RE/B/BSRenderPass.h>
+#include "DrawCall.h"
 #include <d3d11_1.h>
 #include <wrl/client.h>
 #include <filesystem>
@@ -41,13 +41,11 @@ public:
     ID3D11Buffer* RegionArguments()const{return regional.Arguments();}
     static bool busy;
     const void* activeGeometry=nullptr;
-    void InstallRegistration();
-    bool IsOwnedPass(const RE::BSRenderPass*)const;
     void Initialize(ID3D11Device*,const std::filesystem::path&);
     void BeginFrame(unsigned);
     bool Capture(ID3D11DeviceContext*,const Constants&,ID3D11ShaderResourceView* cube,ID3D11ShaderResourceView* sun,ID3D11ShaderResourceView* noise,ID3D11SamplerState* shadow,ID3D11SamplerState* noiseSampler);
-    bool DrawDistant(ID3D11DeviceContext*,const Constants&,ID3D11ShaderResourceView*,ID3D11ShaderResourceView*,UINT,UINT,INT,void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,UINT,UINT,INT));
-    void DrawRegistered(ID3D11DeviceContext*,const void*,UINT,UINT,INT,void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,UINT,UINT,INT));
+    bool DrawDistant(ID3D11DeviceContext*,const Constants&,ID3D11ShaderResourceView*,ID3D11ShaderResourceView*,const DrawCall&);
+    void DrawRegistered(ID3D11DeviceContext*,const void*,const DrawCall&);
     bool ComposeBeforeHDR();
     void Fail(const char*);
     ID3D11ShaderResourceView* Composed()const{return composed.srv.Get();}

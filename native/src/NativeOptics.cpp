@@ -1,39 +1,12 @@
 #include "PCH.h"
 #include "SceneColour.h"
 #include "NativeOptics.h"
-#include <RE/B/BSEffectShaderProperty.h>
-#include <RE/B/BSUtilityShader.h>
-#include <RE/B/BSShaderAccumulator.h>
-#include <MinHook.h>
 #include <d3d11_1.h>
 namespace nuka {
 NativeOptics& Native(){static NativeOptics s;return s;}
 bool NativeOptics::busy=false;
 namespace {
 void hr(HRESULT h){if(FAILED(h))throw std::runtime_error(std::format("Native optics D3D {:08X}",unsigned(h)));}
-bool tagged(RE::BSGeometry* g){return g&&g->name.c_str()&&std::string_view(g->name.c_str()).starts_with("DynamicBottleLiquids:");}
-using Builder=RE::BSShaderProperty::RenderPassArray*(*)(RE::BSEffectShaderProperty*,RE::BSGeometry*,std::uint32_t,RE::BSShaderAccumulator*);
-Builder originalBuilder{};
-using HDRRender=void(*)(void*,void*,void*);
-HDRRender originalHDR{},originalHDRCS{};
-void HDR(void* self,void* geometry,void* parameter){try{Native().ComposeBeforeHDR();}catch(const std::exception& e){Native().Fail(e.what());}originalHDR(self,geometry,parameter);}
-void HDRCS(void* self,void* geometry,void* parameter){try{Native().ComposeBeforeHDR();}catch(const std::exception& e){Native().Fail(e.what());}originalHDRCS(self,geometry,parameter);}
-
-RE::BSShaderProperty::RenderPassArray* Build(RE::BSEffectShaderProperty* p,RE::BSGeometry* g,std::uint32_t mode,RE::BSShaderAccumulator* a){
-    auto* result=originalBuilder(p,g,mode,a);
-    if(!result||!result->passList||!tagged(g))return result;
-    // Only append to a list containing the supported ordinary Effect colour variant.
-    bool colour=false;unsigned links=0;
-    auto* utility=RE::BSUtilityShader::GetSingleton();if(!utility)return result;
-    for(auto* pass=result->passList;pass&&links++<128;pass=pass->propertyNext){
-        if(pass->shader==utility&&pass->passType==5&&pass->passEnum==0x61A)return result;
-        if(pass->geometry==g&&pass->shader!=utility&&(pass->passEnum&((1u<<4)|(1u<<19)|(1u<<21)))&&!(pass->passEnum&((1u<<1)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<18)|(1u<<29))))colour=true;
-    }
-    if(!colour||links>=128)return result;
-    auto* pass=result->Add(utility,p,g,0x61A,0,nullptr,nullptr,nullptr,nullptr);
-    if(pass){pass->passType=5;}
-    return result;
-}
 // Restore the state we change; preserve unrelated constant-buffer bindings.
 struct State {
     ID3D11DeviceContext* c;bool geometry,direct;ID3D11DeviceContext1* c1=nullptr;
@@ -75,18 +48,6 @@ void snapshot(ID3D11Device* d,ID3D11DeviceContext* c,ID3D11Buffer* source,Micros
     c->CopyResource(dest.Get(),source);
 }
 }
-void NativeOptics::InstallRegistration(){
-    auto* target=reinterpret_cast<void*>(RE::ID::BSEffectShaderProperty::GetRenderPasses.address());
-    if(MH_CreateHook(target,reinterpret_cast<void*>(&Build),reinterpret_cast<void**>(&originalBuilder))!=MH_OK||MH_EnableHook(target)!=MH_OK)throw std::runtime_error("Native optics pass builder hook failed");
-    auto hookHDR=[](REL::ID id,HDRRender replacement,HDRRender& original){
-        REL::Relocation<std::uintptr_t> table{id};auto* entry=reinterpret_cast<void**>(table.address());
-        if(MH_CreateHook(entry[1],reinterpret_cast<void*>(replacement),reinterpret_cast<void**>(&original))!=MH_OK||MH_EnableHook(entry[1])!=MH_OK)throw std::runtime_error("Native optics HDR-entry hook failed");
-    };
-    hookHDR(RE::VTABLE::ImageSpaceEffectHDR[0],&HDR,originalHDR);
-    hookHDR(RE::VTABLE::ImageSpaceEffectHDRCS[0],&HDRCS,originalHDRCS);
-
-}
-bool NativeOptics::IsOwnedPass(const RE::BSRenderPass* p)const{return p&&p->passType==5&&p->passEnum==0x61A&&p->shader==RE::BSUtilityShader::GetSingleton()&&tagged(p->geometry);}
 bool NativeOptics::Reject(unsigned reason,const char* description){
     ++healthRejected;
     const auto bit=1u<<reason;
@@ -169,7 +130,7 @@ bool NativeOptics::Capture(ID3D11DeviceContext* c,const Constants& k,ID3D11Shade
     c->PSGetSamplers(5,1,r.cubeSampler.ReleaseAndGetAddressOf());
     ++captured;++healthCaptures;return true;
 }
-bool NativeOptics::DrawDistant(ID3D11DeviceContext* c,const Constants& k,ID3D11ShaderResourceView* cube,ID3D11ShaderResourceView* sun,UINT count,UINT start,INT base,void(STDMETHODCALLTYPE* original)(ID3D11DeviceContext*,UINT,UINT,INT)){
+bool NativeOptics::DrawDistant(ID3D11DeviceContext* c,const Constants& k,ID3D11ShaderResourceView* cube,ID3D11ShaderResourceView* sun,const DrawCall& call){
     if(failed||!device||!directPS||!activeGeometry||k.optics.w<2)return false;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rt;Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;c->OMGetRenderTargets(1,&rt,&depth);if(!rt||!depth)return false;
     if(context.Get()!=c){context=c;context1.Reset();c->QueryInterface(IID_PPV_ARGS(&context1));}
@@ -185,10 +146,10 @@ bool NativeOptics::DrawDistant(ID3D11DeviceContext* c,const Constants& k,ID3D11S
         c->OMSetBlendState(directBlend.Get(),nullptr,~0u);c->OMSetDepthStencilState(directDepth.Get(),0);
         c->PSSetShaderResources(14,1,&cube);c->PSSetShaderResources(20,1,&sun);auto* samp=linear.Get();c->PSSetSamplers(14,1,&samp);
         // Shadow sampler comes from the current renderer binding below.
-        original(c,count,start,base);records.erase(activeGeometry);++healthDistant;
+        call.Issue(c);records.erase(activeGeometry);++healthDistant;
     }catch(...){busy=false;throw;}busy=false;return true;
 }
-void NativeOptics::DrawRegistered(ID3D11DeviceContext* c,const void* geometry,UINT count,UINT start,INT base,void(STDMETHODCALLTYPE* original)(ID3D11DeviceContext*,UINT,UINT,INT)){
+void NativeOptics::DrawRegistered(ID3D11DeviceContext* c,const void* geometry,const DrawCall& call){
     auto i=records.find(geometry);if(failed||i==records.end()||i->second.frame!=frame)return;auto& r=i->second;
 
     D3D11_TEXTURE2D_DESC td{};Microsoft::WRL::ComPtr<ID3D11Texture2D> t;hr(r.colour.As(&t));t->GetDesc(&td);Prepare(c,td.Width,td.Height,td.Format);
@@ -202,7 +163,7 @@ void NativeOptics::DrawRegistered(ID3D11DeviceContext* c,const void* geometry,UI
         cb=viewportConstants.Get();c->PSSetConstantBuffers(11,1,&cb);
         ID3D11ShaderResourceView* resources[21]{};resources[0]=r.base.Get();resources[1]=r.normal.Get();resources[7]=r.mask.Get();resources[14]=r.cube.Get();resources[16]=r.noise.Get();resources[17]=r.depth.Get();resources[20]=r.sun.Get();c->PSSetShaderResources(0,21,resources);
         auto* s=linear.Get();c->PSSetSamplers(14,1,&s);s=r.shadow.Get();c->PSSetSamplers(10,1,&s);s=r.noiseSampler.Get();c->PSSetSamplers(13,1,&s);s=r.cubeSampler.Get();c->PSSetSamplers(5,1,&s);
-        original(c,count,start,base);sourceIdentity=r.colour;mainDepth=r.depth;sceneViewport=r.viewport;++drawn;++healthDraws;
+        call.Issue(c);sourceIdentity=r.colour;mainDepth=r.depth;sceneViewport=r.viewport;++drawn;++healthDraws;
 
     }catch(...){busy=false;throw;}busy=false;
 }
